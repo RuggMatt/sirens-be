@@ -34,6 +34,7 @@ open({
 }).then(async con => {
     db = con;
     await db.run("CREATE TABLE IF NOT EXISTS notifiers (id integer primary key autoincrement, subscription json, timestamp timestamp default current_timestamp, notified integer default 0, endpoint text);");
+    await db.run("ALTER TABLE notifiers ADD COLUMN reason text;").catch(() => { /** We don't care. It probably already exists */});
     console.log(chalk.yellow("Database up"))
 } );
 
