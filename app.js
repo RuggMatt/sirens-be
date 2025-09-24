@@ -134,7 +134,10 @@ run = async () => {
 }
 const interval = setInterval(run, 1 * 60 * 60 * 1000)
 run()
-const server = app.listen(4000, () => console.log(chalk.greenBright("listening on 4ooo")));
+const server = app.listen(4000, () => {
+  console.log(chalk.greenBright("listening on 4ooo"));
+  console.log(new Date());
+});
 
 /**
  * Stops all services
