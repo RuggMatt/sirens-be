@@ -2,8 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const chalk = require('chalk')
 const app = express();
-const sqlite3 = require('sqlite3');
-const { open } = require('sqlite');
+const sqlite3 = require('sqlite3').verbose();
+const { promisify } = require('util');
 const bodyParser = require('body-parser');
 const webpush = require('web-push')
 const { config } = require('dotenv');
@@ -26,17 +26,37 @@ webpush.setVapidDetails(
     vapidKeys.privateKey
 )
 
-/** @type {import("sqlite").Database} */
+
+/** @type {sqlite3.Database} */
 let db; 
-open({
-    filename: 'db/subs.db', 
-    driver: sqlite3.Database
-}).then(async con => {
-    db = con;
-    await db.run("CREATE TABLE IF NOT EXISTS notifiers (id integer primary key autoincrement, subscription json, timestamp timestamp default current_timestamp, notified integer default 0, endpoint text);");
-    await db.run("ALTER TABLE notifiers ADD COLUMN reason text;").catch(() => { /** We don't care. It probably already exists */});
-    console.log(chalk.yellow("Database up"))
-} );
+
+// Initialize database - returns a promise that resolves when DB is ready
+function initializeDatabase() {
+    return new Promise((resolve, reject) => {
+        const dbPath = 'db/subs.db';
+        db = new sqlite3.Database(dbPath, async (err) => {
+            if (err) {
+                console.error(chalk.red('Error opening database:'), err);
+                return reject(err);
+            }
+            
+            // Promisify database methods
+            db.runAsync = promisify(db.run.bind(db));
+            db.allAsync = promisify(db.all.bind(db));
+            db.getAsync = promisify(db.get.bind(db));
+            
+            try {
+                await db.runAsync("CREATE TABLE IF NOT EXISTS notifiers (id integer primary key autoincrement, subscription json, timestamp timestamp default current_timestamp, notified integer default 0, endpoint text);");
+                await db.runAsync("ALTER TABLE notifiers ADD COLUMN reason text;").catch(() => { /** We don't care. It probably already exists */});
+                console.log(chalk.yellow("Database up"));
+                resolve();
+            } catch (error) {
+                console.error(chalk.red('Error initializing database:'), error);
+                reject(error);
+            }
+        });
+    });
+}
 
 app.get('/', (req, res) => {
   res.send("Hello World!");
@@ -44,7 +64,7 @@ app.get('/', (req, res) => {
 app.post('/save-subscription', async (req, res) => {
     console.log(req.body);
     try {
-        let i = await db.run("INSERT INTO notifiers (subscription, endpoint) values (?, ?)", [JSON.stringify(req.body), req.body.endpoint]);
+        let i = await db.runAsync("INSERT INTO notifiers (subscription, endpoint) values (?, ?)", [JSON.stringify(req.body), req.body.endpoint]);
         console.log(i);
         res.json({message: 'success'})
     } catch(e) {
@@ -52,7 +72,7 @@ app.post('/save-subscription', async (req, res) => {
     }
 });
 app.post('/recent', async (req, res) => {
-    let i = await db.all("SELECT * FROM notifiers where endpoint = ? order by id desc", req.body.endpoint);
+    let i = await db.allAsync("SELECT * FROM notifiers where endpoint = ? order by id desc", req.body.endpoint);
     for (let j of i) {
       if (j.reason) {
          j.reason = JSON.parse(j.reason);
@@ -65,7 +85,7 @@ app.post('/recent', async (req, res) => {
  * Returns a list of people who want to be notified, given a particular time
  */
 async function getNearbyClicks(time) {
-    return db.all("SELECT abs(strftime('%s', timestamp) - ?) as diff,  notifiers.* FROM notifiers where (strftime('%s', timestamp) - ?) < 300 and notified = 0", [time, time]);
+    return db.allAsync("SELECT abs(strftime('%s', timestamp) - ?) as diff,  notifiers.* FROM notifiers where (strftime('%s', timestamp) - ?) < 300 and notified = 0", [time, time]);
 }
 
 /**
@@ -113,9 +133,9 @@ async function checkDateForReasons(date) {
             if (subscription) {
                 try {
                     await webpush.sendNotification(subscription, JSON.stringify(date))
-                    await db.run("UPDATE notifiers SET notified = 1, reason = ?  where id = ?", [JSON.stringify(date), row.id]);
+                    await db.runAsync("UPDATE notifiers SET notified = 1, reason = ?  where id = ?", [JSON.stringify(date), row.id]);
                 } catch (e) {
-                    await db.run("UPDATE notifiers sET notified = 2 where id = ?", row.id);
+                    await db.runAsync("UPDATE notifiers sET notified = 2 where id = ?", row.id);
                     console.error(e);
                 }
             } else {
@@ -127,31 +147,57 @@ async function checkDateForReasons(date) {
 
 // once a day, pull the data from edmonton, loop through
 run = async () => {
-    let date = new Date();
-    // wait at least two days to ensure data is present
-    date.setDate(date.getDate() - 1);
-    checkDateForReasons(date);
-}
-const interval = setInterval(run, 1 * 60 * 60 * 1000)
-run()
-const server = app.listen(4000, () => {
-  console.log(chalk.greenBright("listening on 4ooo"));
-  console.log(new Date());
-});
-
-/**
- * Stops all services
- */
-const shutdown = async () => {
-    console.log("Shutting down");
-    await db.close();
-    server.close((err) => {
-        if (err) {
-            console.error(err);
-        }
-    });
-    clearInterval(interval);
+    try {
+        let date = new Date();
+        // wait at least two days to ensure data is present
+        date.setDate(date.getDate() - 1);
+        await checkDateForReasons(date);
+    } catch (error) {
+        console.error(chalk.red('Error in scheduled task:'), error.message);
+    }
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+// Initialize and start the application
+async function startApplication() {
+    try {
+        // Initialize database first
+        await initializeDatabase();
+        
+        // Start scheduled task after database is ready
+        const interval = setInterval(run, 1 * 60 * 60 * 1000);
+        run();
+        
+        // Start server
+        const server = app.listen(4000, () => {
+            console.log(chalk.greenBright("listening on 4ooo"));
+            console.log(new Date());
+        });
+        
+        /**
+         * Stops all services
+         */
+        const shutdown = async () => {
+            console.log("Shutting down");
+            db.close((err) => {
+                if (err) {
+                    console.error('Error closing database:', err);
+                }
+            });
+            server.close((err) => {
+                if (err) {
+                    console.error(err);
+                }
+            });
+            clearInterval(interval);
+        };
+        
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+    } catch (error) {
+        console.error(chalk.red('Failed to start application:'), error);
+        process.exit(1);
+    }
+}
+
+// Start the application
+startApplication();
