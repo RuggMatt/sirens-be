@@ -135,7 +135,7 @@ async function checkDateForReasons(date) {
                     await webpush.sendNotification(subscription, JSON.stringify(date))
                     await db.runAsync("UPDATE notifiers SET notified = 1, reason = ?  where id = ?", [JSON.stringify(date), row.id]);
                 } catch (e) {
-                    await db.runAsync("UPDATE notifiers sET notified = 2 where id = ?", row.id);
+                    await db.runAsync("UPDATE notifiers SET notified = 2 where id = ?", row.id);
                     console.error(e);
                 }
             } else {
@@ -169,7 +169,7 @@ async function startApplication() {
         
         // Start server
         const server = app.listen(4000, () => {
-            console.log(chalk.greenBright("listening on 4ooo"));
+            console.log(chalk.greenBright("listening on 4000"));
             console.log(new Date());
         });
         
