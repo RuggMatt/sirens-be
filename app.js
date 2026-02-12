@@ -178,17 +178,24 @@ async function startApplication() {
          */
         const shutdown = async () => {
             console.log("Shutting down");
-            db.close((err) => {
-                if (err) {
+            clearInterval(interval);
+            
+            // Close database with promisified method
+            if (db) {
+                const closeAsync = promisify(db.close.bind(db));
+                try {
+                    await closeAsync();
+                } catch (err) {
                     console.error('Error closing database:', err);
                 }
-            });
+            }
+            
+            // Close server
             server.close((err) => {
                 if (err) {
                     console.error(err);
                 }
             });
-            clearInterval(interval);
         };
         
         process.on("SIGINT", shutdown);
